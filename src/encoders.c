@@ -87,9 +87,11 @@ encoder_config_t encoder_settings[BANKED_ENCODERS];
 uint8_t get_virtual_encoder_id (uint8_t encoder_bank, uint8_t encoder_id);
 void encoderConfig(encoder_config_t *settings);
 void send_element_midi(enc_control_type_t type, uint8_t banked_encoder_index, uint8_t value, bool state);
-void send_encoder_midi(uint8_t banked_encoder_idx, uint8_t value, bool state, bool shifted);
+void send_encoder_midi(uint8_t banked_encoder_idx, uint16_t value, uint16_t valueHighRes, bool state, bool shifted);
 uint8_t scale_encoder_value(int16_t value);
+uint16_t scale_encoder_value16(int16_t value);
 int16_t clamp_encoder_raw_value(int16_t value);
+int16_t clamp_encoder_raw_value16(int16_t value);
 bool encoder_is_in_detent(int16_t value);
 bool color_overide_active(uint8_t bank, uint8_t encoder);
 // - Encoder Banks
@@ -551,6 +553,7 @@ void   process_encoder_input(void)
 	uint8_t virtual_encoder_id, banked_encoder_id;
 	// Update the current encoder switch states
 	update_encoder_switch_state();
+
 	
 	for (uint8_t i=0;i<16;i++) {
 		
@@ -560,8 +563,10 @@ void   process_encoder_input(void)
 		// Get Virtual Encoder ID (for Value storage)
 		virtual_encoder_id = get_virtual_encoder_id(encoder_bank, i);
 		banked_encoder_id = virtual_encoder_id & BANKED_ENCODER_MASK;
-				
+						
 		if (new_value) {
+
+			bool is14BitMode = (encoder_settings[banked_encoder_id].encoder_midi_type == SEND_NOTE);
 			
 			if ((encoder_settings[banked_encoder_id].has_detent) && 
 			     encoder_is_in_detent(raw_encoder_value[virtual_encoder_id])) {	
@@ -662,38 +667,28 @@ void   process_encoder_input(void)
 						
 					} else if(encoder_settings[banked_encoder_id].movement == DIRECT) {
 							// Standard sensitivity, 1 pulse = 1 CC step
-							scaled_value = new_value*100; 
+							if (is14BitMode) {  //in 14 bit mode, each encoder event increases less the total value
+								scaled_value = new_value * (100 / HIGH_RES_14_BIT_RES_INCREASE) ; 
+							}else{
+								scaled_value = new_value * 100; 
+							}
 							
 					} else  {
 							// Emulated sensitivity, 270 degress rotation = 127 CC steps
-						   scaled_value = new_value*178;   
+						   scaled_value = new_value * 178;   
 						   //scaled_value = new_value*200;   
 					}
 			
-					if (encoder_is_in_shift_state(encoder_bank, i)){  // !Summer2016Update: encoder_is_in_shift_state
-						// !review: should be able to merge this if-else, since shift is now dealt with
-						// - in get_virtual_encoder_id, only send_indicator_midi will differ (via a boolean declaration
+
 						// !Summer2016Update: Shifted Encoders MIDI Channel/ Encoder Value Expansion
 						raw_encoder_value[virtual_encoder_id] += scaled_value;
 						raw_encoder_value[virtual_encoder_id] = clamp_encoder_raw_value(raw_encoder_value[virtual_encoder_id]);
 						// Translate the raw value into a MIDI value, send & save the new value 	
-						uint8_t control_change_value = scale_encoder_value(raw_encoder_value[virtual_encoder_id]);
-						//send_element_midi(SWITCH, i, control_change_value, true);
-						send_encoder_midi(banked_encoder_id, control_change_value, true, true); // !Summer2016Update: Shifted Encoders now always output as Encoders
-						indicator_value_buffer[encoder_bank][i]=control_change_value;
+						uint16_t control_change_value = scale_encoder_value(raw_encoder_value[virtual_encoder_id]);
+						uint16_t control_change_valueHighRes = scale_encoder_value16(raw_encoder_value[virtual_encoder_id]);
 						
-					} else {
-						// !Summer2016Update: Shifted Encoders MIDI Channel/ Encoder Value Expansion
-						raw_encoder_value[virtual_encoder_id] += scaled_value;
-						raw_encoder_value[virtual_encoder_id] = clamp_encoder_raw_value(raw_encoder_value[virtual_encoder_id]);
-						// Translate the raw value into a MIDI value, send & save the new value 	
-						uint8_t control_change_value = scale_encoder_value(raw_encoder_value[virtual_encoder_id]);
-						//send_element_midi(ENCODER, i, control_change_value, true);
-						send_encoder_midi(banked_encoder_id, control_change_value, true, false);
-						//if(!(bit & enc_indicator_overide[encoder_bank])) {
-							indicator_value_buffer[encoder_bank][i]=control_change_value;
-						//}	
-					}	
+						send_encoder_midi(banked_encoder_id, control_change_value, control_change_valueHighRes, true, false);
+						indicator_value_buffer[encoder_bank][i] = control_change_value;
 				}
 			}
 		}
@@ -915,7 +910,7 @@ void run_shift_mode(uint8_t page){
 }
 
 
-void send_encoder_midi(uint8_t banked_encoder_idx, uint8_t value, bool state, bool shifted)
+void send_encoder_midi(uint8_t banked_encoder_idx, uint16_t value, uint16_t valueHighRes, bool state, bool shifted)
 {
 	uint8_t midi_channel = shifted ? encoder_settings[banked_encoder_idx].encoder_shift_midi_channel: encoder_settings[banked_encoder_idx].encoder_midi_channel;
 	// Sending encoder as note is not useful so this can likely be simplified
@@ -942,10 +937,34 @@ void send_encoder_midi(uint8_t banked_encoder_idx, uint8_t value, bool state, bo
 			(uint8_t)secondary_value);		
 		}			
 	} else if (encoder_settings[banked_encoder_idx].encoder_midi_type == SEND_NOTE) {
-		midi_stream_raw_note(midi_channel,
+		
+		//oriol's hack - send note actually sends a sysex msg with 14 bits res instead
+
+		/*midi_stream_raw_note(midi_channel,
 		encoder_settings[banked_encoder_idx].encoder_midi_number,
 		true,
 		value);
+		*/
+
+		uint8_t value_LSB = (uint8_t)(valueHighRes & 0x7F); //LSB
+		uint8_t value_MSB = (uint8_t)((valueHighRes & 0x3F80) >> 7); //MSB
+
+		uint8_t dataBuffer[] = {
+				0xf0, 
+				0x00,						//3 bytes for manufact ID (dj techtools)
+				MANUFACTURER_ID >> 8,
+				MANUFACTURER_ID & 0x7f,
+				0x6, //randomly chosen byte to signify 14bit knob data follows >> encoded as 2 7bit values
+					//[midi channel] [encoderID][MSB][LSB]
+				midi_channel,
+				encoder_settings[banked_encoder_idx].encoder_midi_number,
+				value_MSB,
+				value_LSB,
+				0xf7 //end of message
+				};
+		    
+		midi_stream_sysex(sizeof(dataBuffer), &dataBuffer);
+
 	}
 }
 
@@ -1548,19 +1567,20 @@ void refresh_display(void){
 	change_encoder_bank(current_encoder_bank());
 }
 
+uint16_t scale_encoder_value16(int16_t value)
+{
+	//min input val is 0
+	//max input val is 12700 * HIGH_RES_14_BIT_RES_INCREASE
+	//max output val is 14bit (16383)
+	float ratio = ((float)MAX_VAL_IN_14BIT_MODE) / ((float)12700);
+	uint16_t scaled_value = (uint16_t) (value * ratio);
+	return scaled_value;
+}
+
 uint8_t scale_encoder_value(int16_t value)
 {
 	uint8_t scaled_value;
-	// Detent Checking removed for encoders without 'detent checking enabled' at user request 6/22/2016
-	// - because doing that is redundant, and causes value '64' to not be output
-	// -- if users want a detent, they will enable the center 'detent' feature in the MF Utility, which still functions.
 	scaled_value = (uint8_t) ((value+50)/100);
-	//~ if (encoder_is_in_detent(value))
-	//~ {
-		//~ scaled_value = 63;
-	//~ } else {
-		//~ scaled_value = (uint8_t) ((value+50)/100);
-	//~ }
 	return scaled_value;
 }
 
@@ -1571,6 +1591,12 @@ int16_t clamp_encoder_raw_value(int16_t value)
 	return value;
 }
 
+int16_t clamp_encoder_raw_value16(int16_t value)
+{
+	if (value < 0){value = 0;}
+	if (value > 12700 * HIGH_RES_14_BIT_RES_INCREASE){value = 12700 * HIGH_RES_14_BIT_RES_INCREASE;}
+	return value;
+}
 bool encoder_is_in_detent(int16_t value)
 {
 	if (value > 6200 && value < 6500)

@@ -151,8 +151,8 @@ void debug_16_bit_value(uint16_t value)
 {
 	uint8_t data[3];
 	data[0] = 0xF2;
-	data[2] = (uint8_t)(value & 0x3F);
-	data[1] = (uint8_t)((value >> 8) & 0x3F);
+	data[2] = (uint8_t)(value & 0x7F);
+	data[1] = (uint8_t)((value & 0x3F80) >> 7);
 
 	midi_stream_sysex(3,&data);
 }

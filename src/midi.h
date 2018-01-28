@@ -143,4 +143,6 @@
 	
 	void process_legacy_packet(void);
 
+	void debug_16_bit_value(uint16_t value);
+
 #endif // _MIDI_H_INCLUDED
