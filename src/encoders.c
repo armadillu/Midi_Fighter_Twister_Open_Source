@@ -1126,7 +1126,10 @@ void process_element_midi(uint8_t channel, uint8_t type, uint8_t number, uint8_t
 					// Matched to an encoder indicator
 					// - !Summer2016Update: MIDI Type Filtering for MIDI Feedback
 					if(type == SEND_CC){  
-						if (output_type == SEND_CC || output_type == SEND_REL_ENC) // Ensure MIDI Type Matches
+						// Ensure MIDI Type Matches
+						if (output_type == SEND_CC || output_type == SEND_REL_ENC || 
+						output_type == SEND_NOTE //hacky support for rx CC style messages from ofxRemoteUI (to set knob vals) even when knob is set to NOTE_style (which in reality it just means use high res knobs)
+						) 
 						{
 							process_indicator_update(i, value, 0); // !Summer2016Update: 0 = non-shifted encoder
 						}
