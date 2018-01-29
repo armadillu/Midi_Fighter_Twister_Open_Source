@@ -38,7 +38,7 @@
 	#define BANKED_ENCODER_MASK 0x3F // For Determining banked encoder id from the virtual encoder id
 	#define VIRTUAL_ENCODERS 128  // Twister Firmware supports 4 Banks of 16 Encoders, each containing a virtual shift encoder (4x16x2=128)
 
-	#define HIGH_RES_14_BIT_RES_INCREASE	4	/*how many more "clicks" does the knob take to do a full range turn from 0 to max in the extended 14 bit mode*/
+	#define HIGH_RES_14_BIT_RES_INCREASE	25	/*how many more "clicks" does the knob take to do a full range turn from 0 to max in the extended 14 bit mode*/
 	#define MAX_VAL_IN_14BIT_MODE			16383
 
 	/*	Types: */

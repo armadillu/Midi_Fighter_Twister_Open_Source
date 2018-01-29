@@ -87,11 +87,10 @@ encoder_config_t encoder_settings[BANKED_ENCODERS];
 uint8_t get_virtual_encoder_id (uint8_t encoder_bank, uint8_t encoder_id);
 void encoderConfig(encoder_config_t *settings);
 void send_element_midi(enc_control_type_t type, uint8_t banked_encoder_index, uint8_t value, bool state);
-void send_encoder_midi(uint8_t banked_encoder_idx, uint16_t value, uint16_t valueHighRes, bool state, bool shifted);
+void send_encoder_midi(uint8_t banked_encoder_idx, uint16_t value, uint16_t valueHighRes, bool sendHighRes, bool state, bool shifted);
 uint8_t scale_encoder_value(int16_t value);
 uint16_t scale_encoder_value16(int16_t value);
 int16_t clamp_encoder_raw_value(int16_t value);
-int16_t clamp_encoder_raw_value16(int16_t value);
 bool encoder_is_in_detent(int16_t value);
 bool color_overide_active(uint8_t bank, uint8_t encoder);
 // - Encoder Banks
@@ -565,8 +564,6 @@ void   process_encoder_input(void)
 		banked_encoder_id = virtual_encoder_id & BANKED_ENCODER_MASK;
 						
 		if (new_value) {
-
-			bool is14BitMode = (encoder_settings[banked_encoder_id].encoder_midi_type == SEND_NOTE);
 			
 			if ((encoder_settings[banked_encoder_id].has_detent) && 
 			     encoder_is_in_detent(raw_encoder_value[virtual_encoder_id])) {	
@@ -659,20 +656,17 @@ void   process_encoder_input(void)
 					   responds like an analog potentiometer. */
 					 
 					int16_t scaled_value;
-					 
-					if (encoder_settings[banked_encoder_id].switch_action_type == ENC_FINE_ADJUST &&
-					    get_enc_switch_state() & bit) {
-						// Fine adjust sensitivity, 1 pulse = 1/4 a CC step	
-						scaled_value = new_value*25; 
+					bool fineAdjust = false; //if true, user is pressing down on knob and twisting to get extra res.
+
+					if (encoder_settings[banked_encoder_id].switch_action_type == ENC_FINE_ADJUST && (get_enc_switch_state() & bit)) {
+						// Fine adjust sensitivity, 1 pulse = 1/25th a CC step	
+						scaled_value = new_value * (100.0 / (float)(HIGH_RES_14_BIT_RES_INCREASE)) ; 
+						fineAdjust = true;
 						
 					} else if(encoder_settings[banked_encoder_id].movement == DIRECT) {
 							// Standard sensitivity, 1 pulse = 1 CC step
-							if (is14BitMode) {  //in 14 bit mode, each encoder event increases less the total value
-								scaled_value = new_value * (100 / HIGH_RES_14_BIT_RES_INCREASE) ; 
-							}else{
-								scaled_value = new_value * 100; 
-							}
-							
+							scaled_value = new_value * 100; 
+						
 					} else  {
 							// Emulated sensitivity, 270 degress rotation = 127 CC steps
 						   scaled_value = new_value * 178;   
@@ -687,7 +681,7 @@ void   process_encoder_input(void)
 						uint16_t control_change_value = scale_encoder_value(raw_encoder_value[virtual_encoder_id]);
 						uint16_t control_change_valueHighRes = scale_encoder_value16(raw_encoder_value[virtual_encoder_id]);
 						
-						send_encoder_midi(banked_encoder_id, control_change_value, control_change_valueHighRes, true, false);
+						send_encoder_midi(banked_encoder_id, control_change_value, control_change_valueHighRes, fineAdjust, true, false);
 						indicator_value_buffer[encoder_bank][i] = control_change_value;
 				}
 			}
@@ -910,16 +904,41 @@ void run_shift_mode(uint8_t page){
 }
 
 
-void send_encoder_midi(uint8_t banked_encoder_idx, uint16_t value, uint16_t valueHighRes, bool state, bool shifted)
+void send_encoder_midi(uint8_t banked_encoder_idx, uint16_t value, uint16_t valueHighRes, bool sendHighRes, bool state, bool shifted)
 {
 	uint8_t midi_channel = shifted ? encoder_settings[banked_encoder_idx].encoder_shift_midi_channel: encoder_settings[banked_encoder_idx].encoder_midi_channel;
 	// Sending encoder as note is not useful so this can likely be simplified
 	// once incremental messages are added
 	if (encoder_settings[banked_encoder_idx].encoder_midi_type == SEND_CC)
 	{
-		midi_stream_raw_cc(midi_channel,
-		encoder_settings[banked_encoder_idx].encoder_midi_number,
-		value);
+		if (sendHighRes){ //fine adjust: user is pressing switch and rotating knob - sysex
+		
+			uint8_t value_LSB = (uint8_t)(valueHighRes & 0x7F); //LSB
+			uint8_t value_MSB = (uint8_t)((valueHighRes & 0x3F80) >> 7); //MSB
+
+			uint8_t dataBuffer[] = {
+				0xf0,
+				0x00,						//3 bytes for manufact ID (dj techtools)
+				MANUFACTURER_ID >> 8,
+				MANUFACTURER_ID & 0x7f,
+				0x6, //randomly chosen byte to signify 14bit knob data follows >> encoded as 2 7bit values
+				//[midi channel] [encoderID][MSB][LSB]
+				midi_channel,
+				encoder_settings[banked_encoder_idx].encoder_midi_number,
+				value_MSB,
+				value_LSB,
+				0xf7 //end of message
+			};
+		
+			midi_stream_sysex(sizeof(dataBuffer), &dataBuffer);
+		
+		}else{ //standard res cc
+
+			midi_stream_raw_cc(midi_channel,
+			encoder_settings[banked_encoder_idx].encoder_midi_number,
+			value);
+		}
+		
 		if (encoder_settings[banked_encoder_idx].is_super_knob && (value >= global_super_knob_start)) {
 
 			float step = 1/(((float)(global_super_knob_end - global_super_knob_start)) / 127.0f);
@@ -938,33 +957,10 @@ void send_encoder_midi(uint8_t banked_encoder_idx, uint16_t value, uint16_t valu
 		}			
 	} else if (encoder_settings[banked_encoder_idx].encoder_midi_type == SEND_NOTE) {
 		
-		//oriol's hack - send note actually sends a sysex msg with 14 bits res instead
-
-		/*midi_stream_raw_note(midi_channel,
+		midi_stream_raw_note(midi_channel,
 		encoder_settings[banked_encoder_idx].encoder_midi_number,
 		true,
 		value);
-		*/
-
-		uint8_t value_LSB = (uint8_t)(valueHighRes & 0x7F); //LSB
-		uint8_t value_MSB = (uint8_t)((valueHighRes & 0x3F80) >> 7); //MSB
-
-		uint8_t dataBuffer[] = {
-				0xf0, 
-				0x00,						//3 bytes for manufact ID (dj techtools)
-				MANUFACTURER_ID >> 8,
-				MANUFACTURER_ID & 0x7f,
-				0x6, //randomly chosen byte to signify 14bit knob data follows >> encoded as 2 7bit values
-					//[midi channel] [encoderID][MSB][LSB]
-				midi_channel,
-				encoder_settings[banked_encoder_idx].encoder_midi_number,
-				value_MSB,
-				value_LSB,
-				0xf7 //end of message
-				};
-		    
-		midi_stream_sysex(sizeof(dataBuffer), &dataBuffer);
-
 	}
 }
 
@@ -1594,12 +1590,6 @@ int16_t clamp_encoder_raw_value(int16_t value)
 	return value;
 }
 
-int16_t clamp_encoder_raw_value16(int16_t value)
-{
-	if (value < 0){value = 0;}
-	if (value > 12700 * HIGH_RES_14_BIT_RES_INCREASE){value = 12700 * HIGH_RES_14_BIT_RES_INCREASE;}
-	return value;
-}
 bool encoder_is_in_detent(int16_t value)
 {
 	if (value > 6200 && value < 6500)
