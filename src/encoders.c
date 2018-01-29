@@ -565,6 +565,11 @@ void   process_encoder_input(void)
 						
 		if (new_value) {
 			
+			bool fineAdjust = false; //if true, user is pressing down on knob and twisting to get extra res.
+			if (encoder_settings[banked_encoder_id].switch_action_type == ENC_FINE_ADJUST && (get_enc_switch_state() & bit)) {
+				fineAdjust = true;
+			}
+
 			if ((encoder_settings[banked_encoder_id].has_detent) && 
 			     encoder_is_in_detent(raw_encoder_value[virtual_encoder_id])) {	
 					
@@ -582,22 +587,26 @@ void   process_encoder_input(void)
 				// The encoder is in a end zone, only change the encoder value
 				//   once we have moved out of the dead zone. 
 				
-				if( ((raw_encoder_value[virtual_encoder_id] < 100) && (new_value > 0)) ||
-					((raw_encoder_value[virtual_encoder_id] > 12600) && (new_value < 0)) ) {
+				uint16_t low = fineAdjust ? 1 : 100;
+				uint16_t high = fineAdjust ? 12700 - 2 : 12600;
+				uint16_t deadZone = fineAdjust ? 1 : g_dead_zone_size;
+
+				if( ((raw_encoder_value[virtual_encoder_id] < low) && (new_value > 0)) ||
+					((raw_encoder_value[virtual_encoder_id] > high) && (new_value < 0)) ) {
 					
 					encoder_detent_counter[i] += new_value;
 				}
 				
-				if ((encoder_detent_counter[i] > g_dead_zone_size) &&  
-				    (raw_encoder_value[virtual_encoder_id] < 100)) {
+				if ((encoder_detent_counter[i] > deadZone) &&  
+				    (raw_encoder_value[virtual_encoder_id] < low)) {
 					
-					raw_encoder_value[virtual_encoder_id] = 100;
+					raw_encoder_value[virtual_encoder_id] = low;
 					encoder_detent_counter[i] = 0;
 					
-				} else if ((encoder_detent_counter[i] < -g_dead_zone_size) &&
-				           (raw_encoder_value[virtual_encoder_id] > 12600)) {
+				} else if ((encoder_detent_counter[i] < -deadZone) &&
+				           (raw_encoder_value[virtual_encoder_id] > high)) {
 					
-					raw_encoder_value[virtual_encoder_id] = 12600;
+					raw_encoder_value[virtual_encoder_id] = high;
 					encoder_detent_counter[i] = 0;
 				}
 			} else { 
@@ -656,7 +665,6 @@ void   process_encoder_input(void)
 					   responds like an analog potentiometer. */
 					 
 					int16_t scaled_value;
-					bool fineAdjust = false; //if true, user is pressing down on knob and twisting to get extra res.
 
 					if (encoder_settings[banked_encoder_id].switch_action_type == ENC_FINE_ADJUST && (get_enc_switch_state() & bit)) {
 						// Fine adjust sensitivity, 1 pulse = 1/25th a CC step	
@@ -664,25 +672,25 @@ void   process_encoder_input(void)
 						fineAdjust = true;
 						
 					} else if(encoder_settings[banked_encoder_id].movement == DIRECT) {
-							// Standard sensitivity, 1 pulse = 1 CC step
-							scaled_value = new_value * 100; 
-						
+						// Standard sensitivity, 1 pulse = 1 CC step
+						scaled_value = new_value * 100; 
 					} else  {
-							// Emulated sensitivity, 270 degress rotation = 127 CC steps
-						   scaled_value = new_value * 178;   
-						   //scaled_value = new_value*200;   
+						// Emulated sensitivity, 270 degress rotation = 127 CC steps
+						scaled_value = new_value * 178;   
+						//scaled_value = new_value*200;   
 					}
 			
 
-						// !Summer2016Update: Shifted Encoders MIDI Channel/ Encoder Value Expansion
-						raw_encoder_value[virtual_encoder_id] += scaled_value;
-						raw_encoder_value[virtual_encoder_id] = clamp_encoder_raw_value(raw_encoder_value[virtual_encoder_id]);
-						// Translate the raw value into a MIDI value, send & save the new value 	
-						uint16_t control_change_value = scale_encoder_value(raw_encoder_value[virtual_encoder_id]);
-						uint16_t control_change_valueHighRes = scale_encoder_value16(raw_encoder_value[virtual_encoder_id]);
+					// !Summer2016Update: Shifted Encoders MIDI Channel/ Encoder Value Expansion
+					raw_encoder_value[virtual_encoder_id] += scaled_value;
+					raw_encoder_value[virtual_encoder_id] = clamp_encoder_raw_value(raw_encoder_value[virtual_encoder_id]);
+					// Translate the raw value into a MIDI value, send & save the new value 	
+					uint16_t control_change_value = scale_encoder_value(raw_encoder_value[virtual_encoder_id]);
+					uint16_t control_change_valueHighRes = scale_encoder_value16(raw_encoder_value[virtual_encoder_id]);
 						
-						send_encoder_midi(banked_encoder_id, control_change_value, control_change_valueHighRes, fineAdjust, true, false);
-						indicator_value_buffer[encoder_bank][i] = control_change_value;
+					send_encoder_midi(banked_encoder_id, control_change_value, control_change_valueHighRes, fineAdjust, true, false);
+					indicator_value_buffer[encoder_bank][i] = control_change_value;
+
 				}
 			}
 		}
